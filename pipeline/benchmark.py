@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
 import subprocess
 import time
 import tracemalloc
@@ -29,6 +30,8 @@ def benchmark_python(count: int) -> dict[str, float]:
 
 def benchmark_go(count: int, workdir: Path) -> dict[str, float]:
     out_dir = workdir / "data" / "bench-go"
+    if out_dir.exists():
+        shutil.rmtree(out_dir)
     started = time.perf_counter()
     subprocess.run(
         ["go", "run", "./cmd/collector", "-count", str(count), "-out", str(out_dir), "-batch", "100"],
