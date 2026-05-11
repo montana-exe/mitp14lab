@@ -3,9 +3,12 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"flag"
+	"fmt"
+	"hash/fnv"
 	"log"
 	"net/http"
 	"os"
@@ -15,17 +18,25 @@ import (
 	"time"
 
 	"mitp/lab14/collector/internal/social"
+
+	"github.com/nats-io/nats.go"
 )
 
 func main() {
 	var (
-		outDir     = flag.String("out", "data", "output directory")
-		count      = flag.Int("count", 240, "number of synthetic posts to collect")
-		batchSize  = flag.Int("batch", 50, "JSONL batch size")
-		windowSize = flag.Duration("window", time.Minute, "aggregation window")
-		serve      = flag.Bool("serve", false, "start Arrow HTTP server after collection")
-		addr       = flag.String("addr", ":8080", "HTTP server address")
-		topicsFlag = flag.String("topics", "ai,fintech,travel,gaming", "comma-separated topics")
+		outDir       = flag.String("out", "data", "output directory")
+		count        = flag.Int("count", 240, "number of synthetic posts to collect")
+		batchSize    = flag.Int("batch", 50, "JSONL batch size")
+		windowSize   = flag.Duration("window", time.Minute, "aggregation window")
+		serve        = flag.Bool("serve", false, "start Arrow HTTP server after collection")
+		addr         = flag.String("addr", ":8080", "HTTP server address")
+		topicsFlag   = flag.String("topics", "ai,fintech,travel,gaming", "comma-separated topics")
+		collectorID  = flag.String("collector-id", envOrDefault("COLLECTOR_ID", "collector-local"), "collector identity for distributed coordination")
+		shardIndex   = flag.Int("shard-index", envIntOrDefault("SHARD_INDEX", 0), "zero-based shard index owned by this collector")
+		shardTotal   = flag.Int("shard-total", envIntOrDefault("SHARD_TOTAL", 1), "total shard count across collectors")
+		etcdEndpoint = flag.String("etcd-endpoint", os.Getenv("ETCD_ENDPOINT"), "etcd HTTP endpoint, for example http://etcd:2379")
+		natsURL      = flag.String("nats-url", os.Getenv("NATS_URL"), "NATS broker URL, for example nats://nats:4222")
+		subject      = flag.String("stream-subject", envOrDefault("STREAM_SUBJECT", "social.windows"), "NATS subject for window metrics")
 	)
 	flag.Parse()
 
@@ -33,9 +44,23 @@ func main() {
 	defer stop()
 
 	topics := splitTopics(*topicsFlag)
-	metrics, err := collect(ctx, *outDir, *count, *batchSize, *windowSize, topics)
+	cfg := CollectorConfig{
+		ID:            *collectorID,
+		ShardIndex:    *shardIndex,
+		ShardTotal:    *shardTotal,
+		EtcdEndpoint:  *etcdEndpoint,
+		NATSURL:       *natsURL,
+		StreamSubject: *subject,
+	}
+	if err := registerCollector(ctx, cfg); err != nil {
+		log.Printf("etcd registration skipped: %v", err)
+	}
+	metrics, err := collect(ctx, *outDir, *count, *batchSize, *windowSize, topics, cfg)
 	if err != nil {
 		log.Fatalf("collect: %v", err)
+	}
+	if err := publishWindows(ctx, cfg, metrics); err != nil {
+		log.Fatalf("publish windows: %v", err)
 	}
 	if *serve {
 		if err := serveArrow(ctx, *addr, metrics); err != nil {
@@ -44,7 +69,22 @@ func main() {
 	}
 }
 
-func collect(ctx context.Context, outDir string, count, batchSize int, window time.Duration, topics []string) ([]social.WindowMetric, error) {
+type CollectorConfig struct {
+	ID            string `json:"id"`
+	ShardIndex    int    `json:"shard_index"`
+	ShardTotal    int    `json:"shard_total"`
+	EtcdEndpoint  string `json:"etcd_endpoint"`
+	NATSURL       string `json:"nats_url"`
+	StreamSubject string `json:"stream_subject"`
+}
+
+func collect(ctx context.Context, outDir string, count, batchSize int, window time.Duration, topics []string, cfg CollectorConfig) ([]social.WindowMetric, error) {
+	if cfg.ShardTotal < 1 {
+		return nil, fmt.Errorf("shard-total must be positive, got %d", cfg.ShardTotal)
+	}
+	if cfg.ShardIndex < 0 || cfg.ShardIndex >= cfg.ShardTotal {
+		return nil, fmt.Errorf("shard-index must be in [0,%d), got %d", cfg.ShardTotal, cfg.ShardIndex)
+	}
 	simulator := social.NewSimulator(42, topics)
 	aggregator := social.NewAggregator(window)
 	postWriter := social.NewJSONLWriter[social.Post](outDir+"/posts.jsonl", batchSize, 500*time.Millisecond)
@@ -60,6 +100,9 @@ func collect(ctx context.Context, outDir string, count, batchSize int, window ti
 		default:
 		}
 		post := simulator.Next(i, start.Add(time.Duration(i)*5*time.Second))
+		if !belongsToShard(post.PostID, cfg.ShardIndex, cfg.ShardTotal) {
+			continue
+		}
 		aggregator.Add(post)
 		if err := postWriter.Add(post); err != nil {
 			return nil, err
@@ -78,6 +121,83 @@ func collect(ctx context.Context, outDir string, count, batchSize int, window ti
 		return nil, err
 	}
 	return metrics, nil
+}
+
+func belongsToShard(key string, shardIndex, shardTotal int) bool {
+	if shardTotal <= 1 {
+		return true
+	}
+	hasher := fnv.New32a()
+	_, _ = hasher.Write([]byte(key))
+	return int(hasher.Sum32()%uint32(shardTotal)) == shardIndex
+}
+
+func registerCollector(ctx context.Context, cfg CollectorConfig) error {
+	if cfg.EtcdEndpoint == "" {
+		return nil
+	}
+	payload := map[string]string{
+		"key":   base64.StdEncoding.EncodeToString([]byte("/lab14/collectors/" + cfg.ID)),
+		"value": base64.StdEncoding.EncodeToString(mustJSON(cfg)),
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	url := strings.TrimRight(cfg.EtcdEndpoint, "/") + "/v3/kv/put"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= http.StatusBadRequest {
+		return fmt.Errorf("etcd returned %s", resp.Status)
+	}
+	log.Printf("collector %s registered in etcd with shard %d/%d", cfg.ID, cfg.ShardIndex, cfg.ShardTotal)
+	return nil
+}
+
+func publishWindows(ctx context.Context, cfg CollectorConfig, metrics []social.WindowMetric) error {
+	if cfg.NATSURL == "" || len(metrics) == 0 {
+		return nil
+	}
+	nc, err := nats.Connect(cfg.NATSURL, nats.Name("lab14-"+cfg.ID), nats.Timeout(5*time.Second))
+	if err != nil {
+		return err
+	}
+	defer nc.Close()
+	for _, metric := range metrics {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+		payload, err := json.Marshal(metric)
+		if err != nil {
+			return err
+		}
+		if err := nc.Publish(cfg.StreamSubject, payload); err != nil {
+			return err
+		}
+	}
+	if err := nc.FlushTimeout(5 * time.Second); err != nil {
+		return err
+	}
+	log.Printf("published %d window metrics to %s", len(metrics), cfg.StreamSubject)
+	return nil
+}
+
+func mustJSON(value any) []byte {
+	data, err := json.Marshal(value)
+	if err != nil {
+		panic(err)
+	}
+	return data
 }
 
 func serveArrow(ctx context.Context, addr string, metrics []social.WindowMetric) error {
@@ -136,6 +256,25 @@ func splitTopics(value string) []string {
 		}
 	}
 	return topics
+}
+
+func envOrDefault(key, fallback string) string {
+	if value := os.Getenv(key); value != "" {
+		return value
+	}
+	return fallback
+}
+
+func envIntOrDefault(key string, fallback int) int {
+	value := os.Getenv(key)
+	if value == "" {
+		return fallback
+	}
+	var parsed int
+	if _, err := fmt.Sscanf(value, "%d", &parsed); err != nil {
+		return fallback
+	}
+	return parsed
 }
 
 func init() {
