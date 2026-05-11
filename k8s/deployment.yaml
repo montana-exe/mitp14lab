@@ -1,0 +1,140 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: collector
+  namespace: lab14-social
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: collector
+  template:
+    metadata:
+      labels:
+        app: collector
+    spec:
+      containers:
+        - name: collector
+          image: lab14-social-collector:latest
+          imagePullPolicy: IfNotPresent
+          args:
+            - -out
+            - /app/data
+            - -count
+            - "1000000"
+            - -batch
+            - "100"
+            - -serve
+            - -addr
+            - :8080
+            - -collector-id
+            - $(POD_NAME)
+            - -shard-index
+            - "-1"
+            - -shard-total
+            - "2"
+            - -shard-strategy
+            - author-range
+            - -etcd-endpoint
+            - http://etcd:2379
+            - -nats-url
+            - nats://nats:4222
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+          ports:
+            - containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 150m
+              memory: 128Mi
+            limits:
+              cpu: 750m
+              memory: 256Mi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: analyzer
+  namespace: lab14-social
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: analyzer
+  template:
+    metadata:
+      labels:
+        app: analyzer
+    spec:
+      containers:
+        - name: analyzer
+          image: lab14-stream-analyzer:latest
+          imagePullPolicy: IfNotPresent
+          args:
+            - python
+            - -m
+            - pipeline.stream_consumer
+            - --nats-url
+            - nats://nats:4222
+            - --subject
+            - social.windows
+            - --output
+            - /app/data/stream_windows.jsonl
+            - --reports
+            - /app/reports
+            - --flush-every
+            - "10"
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 600m
+              memory: 512Mi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dashboard
+  namespace: lab14-social
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: dashboard
+  template:
+    metadata:
+      labels:
+        app: dashboard
+    spec:
+      containers:
+        - name: dashboard
+          image: lab14-social-dashboard:latest
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: ARROW_URL
+              value: http://collector:8080/arrow
+          ports:
+            - containerPort: 8501
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 8501
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi

@@ -1,176 +1,151 @@
 # Prompt Log
 
-## Advanced 1. Go collectors и предметная область
+## Задание 1 - etcd collector
 
 ### Промпт 1
 **Инструмент:** Codex GPT-5  
-**Промпт:** "Сделай ЛР14, вариант 12: распределённая платформа мониторинга соцсетей, Go collector, Python analytics, без реальных API-ключей."  
-**Результат:** Получил deterministic simulator Twitter/X-подобных постов: topics, authors, sentiment, engagement, language.
+**Промпт:** "Добавь distributed coordination: collectors должны регистрироваться в etcd и хранить collector-id, shard-index, shard-total."  
+**Результат:** Collector пишет ключ `/lab14/collectors/<collector-id>` через etcd v3 HTTP API.
 
 ### Промпт 2
 **Инструмент:** Codex GPT-5  
-**Промпт:** "Вынеси core logic из CLI, чтобы были нормальные Go unit tests и graceful shutdown."  
-**Результат:** Добавлены `collector/internal/social`, JSONL batch writer, aggregator tests.  
-**Что исправлено вручную:** CLI не должен держать бизнес-логику, иначе тесты запускали бы весь collector.
+**Промпт:** "Нужно shard assignment не только по post_id, но и по темам/авторам, чтобы было похоже на реальную распределённую систему."  
+**Результат:** Добавлены стратегии `hash`, `topic`, `author-range`, режим `-shard-index -1` для Kubernetes pod names и Go unit tests.
 
 ### Итого
 - Количество промптов: 2
-- Проблемы: сначала код был слишком CLI-oriented.
-- Время: ~45 минут
+- Проблемы: Docker networking для etcd требовал service DNS `http://etcd:2379`, а не localhost.
+- Что исправлено вручную: добавлена сериализация metadata в etcd value и тесты shard assignment.
 
 ---
 
-## Advanced 2. Distributed coordination через etcd
+## Задание 2 - window aggregation
 
 ### Промпт 1
 **Инструмент:** Codex GPT-5  
-**Промпт:** "Добавь etcd registry для collectors: collector-id, shard-index, shard-total, HTTP v3 API без тяжёлой зависимости."  
-**Результат:** Collector пишет ключ `/lab14/collectors/<id>` в etcd.
+**Промпт:** "Сделай Go aggregation по tumbling windows для social monitoring: counts, sentiment, engagement, unique authors."  
+**Результат:** Добавлен агрегатор окон по topic с метриками positive/negative/neutral, min/max/avg sentiment, engagement и unique authors.
 
 ### Промпт 2
 **Инструмент:** Codex GPT-5  
-**Промпт:** "Сделай shard filter, чтобы несколько collectors не обрабатывали один и тот же поток."  
-**Результат:** Добавлен FNV-1a hash по `post_id`.  
-**Что исправлено вручную:** Для Kubernetes добавлен режим `-shard-index -1`, чтобы индекс выводился из имени pod, иначе HPA-копии получали одинаковый shard.
+**Промпт:** "Вынеси collector logic из CLI, чтобы можно было тестировать aggregator и graceful flush отдельно."  
+**Результат:** Логика вынесена в `collector/internal/social`, добавлены Go unit tests.
 
 ### Итого
 - Количество промптов: 2
-- Проблемы: Docker networking для etcd требовал endpoint `http://etcd:2379`, а не localhost.
-- Время: ~40 минут
+- Проблемы: первоначальный CLI-вариант было сложно покрыть тестами.
+- Что исправлено вручную: writer получил batch flush по размеру и времени.
 
 ---
 
-## Advanced 3. NATS streaming pipeline
+## Задание 3 - Arrow
 
 ### Промпт 1
 **Инструмент:** Codex GPT-5  
-**Промпт:** "Добавь настоящий stream broker между collectors и analyzer. Kafka можно, но для учебного compose лучше NATS."  
-**Результат:** Collector публикует `WindowMetric` в subject `social.windows`.
+**Промпт:** "Открой агрегированные окна через Apache Arrow endpoint из Go."  
+**Результат:** Добавлен `/arrow`, Arrow IPC stream и Python client.
 
 ### Промпт 2
 **Инструмент:** Codex GPT-5  
-**Промпт:** "Сделай Python analyzer service, который подписывается на NATS и пишет stream JSONL."  
-**Результат:** Добавлен `pipeline.stream_consumer`, Dockerfile analyzer и tests для message validation.
-
-### Промпт 3
-**Инструмент:** Codex GPT-5  
-**Промпт:** "NATS в compose стартует позже analyzer, добавь reconnect/retry."  
-**Результат:** Analyzer повторяет подключение и не падает при раннем старте.  
-**Что исправлено вручную:** Некорректные NATS messages логируются и пропускаются, чтобы один bad event не ломал consumer.
-
-### Итого
-- Количество промптов: 3
-- Проблемы: connection refused при холодном старте compose.
-- Время: ~55 минут
-
----
-
-## Advanced 4. Apache Arrow exchange
-
-### Промпт 1
-**Инструмент:** Codex GPT-5  
-**Промпт:** "Сделай Arrow endpoint в Go и Python client для Streamlit dashboard."  
-**Результат:** Добавлен `/arrow`, `pipeline.arrow_client.fetch_arrow`, dashboard читает Arrow IPC stream.
-
-### Промпт 2
-**Инструмент:** Codex GPT-5  
-**Промпт:** "Arrow response иногда пустой при ошибке upstream. Сделай тестируемую защиту."  
-**Результат:** Добавлена `read_arrow_stream()` и tests.
+**Промпт:** "Arrow response иногда может быть пустым при upstream ошибке. Добавь тестируемую защиту."  
+**Результат:** Выделена `read_arrow_stream()`, добавлены pytest tests.
 
 ### Итого
 - Количество промптов: 2
-- Проблемы: Arrow serialization чувствителен к типам timestamp, поэтому timestamps передаются строкой.
-- Время: ~35 минут
+- Проблемы: Arrow serialization чувствителен к timestamp/timezone, поэтому timestamp передаётся строкой.
+- Что исправлено вручную: добавлен отдельный документ `docs/ARROW.md`.
 
 ---
 
-## Advanced 5. Python analytics: Polars + DuckDB
+## Задание 4 - Rust validation
 
 ### Промпт 1
 **Инструмент:** Codex GPT-5  
-**Промпт:** "Реализуй analyzer: JSONL -> Polars cleanup -> indicators -> Parquet -> DuckDB report -> Plotly HTML."  
-**Результат:** Добавлены cleanup, `sentiment_sma`, `social_rsi`, topic summary и HTML-графики.
+**Промпт:** "Добавь Rust validation module для social records: topic, sentiment range, engagement, timestamp."  
+**Результат:** Создан `rust-validator` crate с библиотекой, CLI `validate`, CLI `bench` и Rust unit tests.
 
 ### Промпт 2
 **Инструмент:** Codex GPT-5  
-**Промпт:** "Pytest падает на datetime parsing Polars для ISO Z. Исправь совместимо с текущей версией."  
-**Результат:** Использован явный формат `%Y-%m-%dT%H:%M:%S%#z`.
-
-### Промпт 3
-**Инструмент:** Codex GPT-5  
-**Промпт:** "DuckDB отчёт должен быть параметризованным, без string SQL путей."  
-**Результат:** `read_parquet(?)` вызывается с параметром.  
-**Что исправлено вручную:** Тесты проверяют outcome, а не хрупкое внутреннее представление Polars dtype.
-
-### Итого
-- Количество промптов: 3
-- Проблемы: Polars/DuckDB различались в обработке datetime и nullable columns.
-- Время: ~60 минут
-
----
-
-## Advanced 6. Rust validation module
-
-### Промпт 1
-**Инструмент:** Codex GPT-5  
-**Промпт:** "Добавь Rust-библиотеку для валидации social posts/window metrics JSONL."  
-**Результат:** Создан `rust-validator` crate: lib, CLI `validate`, CLI `bench`, unit tests.
-
-### Промпт 2
-**Инструмент:** Codex GPT-5  
-**Промпт:** "Подключи Rust validator к Python analyzer, но не ломай окружение без Rust."  
-**Результат:** Добавлена `pipeline.rust_validator`; analyzer включает проверку через `--rust-validate`.
-
-### Промпт 3
-**Инструмент:** Codex GPT-5  
-**Промпт:** "На Windows cargo не найден. Сделай честный benchmark вместо фейкового результата."  
-**Результат:** Benchmark пишет `rust_validator.status = unavailable`, если Cargo отсутствует.  
-**Что исправлено вручную:** Локально `cargo test` не запускался, потому что Rust toolchain не установлен.
-
-### Итого
-- Количество промптов: 3
-- Проблемы: Rust build нельзя было проверить на текущей машине без установки toolchain.
-- Время: ~50 минут
-
----
-
-## Advanced 7. Docker Compose production stack
-
-### Промпт 1
-**Инструмент:** Codex GPT-5  
-**Промпт:** "Расширь docker-compose до distributed stack: etcd, NATS, collector, analyzer, dashboard."  
-**Результат:** Добавлены сервисы, volumes, healthchecks и `depends_on: condition: service_healthy`.
-
-### Промпт 2
-**Инструмент:** Codex GPT-5  
-**Промпт:** "Проверь compose config и исправь networking между services."  
-**Результат:** `docker compose config` проходит; service names используются как DNS names.
+**Промпт:** "Подключи Rust validator к Python analyzer, но не ломай окружение без cargo."  
+**Результат:** Добавлена Python-обёртка `pipeline.rust_validator` и флаг `--rust-validate`.
 
 ### Итого
 - Количество промптов: 2
-- Проблемы: Docker Desktop на локальной машине был выключен, поэтому полный `compose up` нельзя было подтвердить.
-- Время: ~30 минут
+- Проблемы: локально `cargo` не установлен, поэтому Python-тесты покрывают unavailable/error paths.
+- Что исправлено вручную: benchmark честно пишет `rust_validator.status = unavailable`, а не имитирует Rust-результат.
 
 ---
 
-## Advanced 8. Kubernetes + HPA + финальная проверка
+## Задание 5 - Kubernetes/HPA
 
 ### Промпт 1
 **Инструмент:** Codex GPT-5  
-**Промпт:** "Добавь Kubernetes manifests: deployments, services, resource limits, HPA."  
-**Результат:** Создан `k8s/` с namespace, etcd, NATS, collector, analyzer, dashboard и HPA.
+**Промпт:** "Добавь Kubernetes manifests: deployment.yaml, service.yaml, hpa.yaml, resource requests/limits."  
+**Результат:** Созданы `k8s/deployment.yaml`, `k8s/service.yaml`, `k8s/hpa.yaml`, namespace, etcd и NATS manifests.
 
 ### Промпт 2
 **Инструмент:** Codex GPT-5  
-**Промпт:** "README должен выглядеть как distributed-system документация, а prompt log - как реальный процесс, не 1 идеальный промпт."  
-**Результат:** README переписан на русском: architecture diagram, data flow, streaming, Arrow, Kubernetes, scaling, tests.
-
-### Промпт 3
-**Инструмент:** Codex GPT-5  
-**Промпт:** "Проверь работу как AI reviewer: тесты, git artifacts, README, PROMPT_LOG, Docker config."  
-**Результат:** Запущены Go tests, pytest, benchmark, docker compose config; проверено отсутствие tracked artifacts.
+**Промпт:** "Проверь kustomize output и убери дублирующиеся deployment файлы."  
+**Результат:** `kubectl kustomize k8s` строит единый валидный manifest set.
 
 ### Итого
-- Количество промптов: 3
-- Проблемы: Kubernetes HPA требует metrics-server в кластере, это описано в docs.
-- Время: ~45 минут
+- Количество промптов: 2
+- Проблемы: HPA требует metrics-server в реальном кластере.
+- Что исправлено вручную: split manifests свернуты в ожидаемые `deployment.yaml` и `service.yaml`.
+
+---
+
+## Задание 6 - Go vs Python benchmark
+
+### Промпт 1
+**Инструмент:** Codex GPT-5  
+**Промпт:** "Добавь честный benchmark Go collector против Python asyncio collector."  
+**Результат:** `pipeline.benchmark` запускает реальный `go run`, считает records/sec и сравнивает с Python collector.
+
+### Промпт 2
+**Инструмент:** Codex GPT-5  
+**Промпт:** "Добавь Rust validator benchmark, но не фейкуй его без cargo."  
+**Результат:** Rust benchmark запускается только при доступном `cargo`, иначе помечается как unavailable.
+
+### Итого
+- Количество промптов: 2
+- Проблемы: старая папка benchmark могла влиять на количество строк.
+- Что исправлено вручную: `data/bench-go` очищается перед каждым запуском.
+
+---
+
+## Задание 7 - Kafka/NATS streaming
+
+### Промпт 1
+**Инструмент:** Codex GPT-5  
+**Промпт:** "Добавь настоящий stream broker: collector публикует события/агрегаты, Python analyzer читает поток. JSONL оставить fallback."  
+**Результат:** Выбран NATS, collector публикует `social.windows`, analyzer подписывается через `pipeline.stream_consumer`.
+
+### Промпт 2
+**Инструмент:** Codex GPT-5  
+**Промпт:** "NATS может стартовать позже analyzer. Добавь reconnect и validation сообщений."  
+**Результат:** Analyzer повторяет подключение, invalid messages логируются и пропускаются.
+
+### Итого
+- Количество промптов: 2
+- Проблемы: `connect refused` при холодном старте Docker Compose.
+- Что исправлено вручную: JSONL оставлен как replay/fallback, но основной compose path идёт через NATS.
+
+---
+
+## Задание 8 - realtime dashboard
+
+### Промпт 1
+**Инструмент:** Codex GPT-5  
+**Промпт:** "Сделай realtime dashboard для social monitoring: topic filter, sentiment trend, engagement, table."  
+**Результат:** Streamlit dashboard читает Arrow endpoint и показывает ключевые графики.
+
+### Промпт 2
+**Инструмент:** Codex GPT-5  
+**Промпт:** "Dashboard не должен быть единственным сервисом в compose, добавь analyzer, healthchecks и depends_on."  
+**Результат:** Compose содержит `etcd`, `nats`, `collector`, `analyzer`, `dashboard`; healthchecks и `condition: service_healthy`.
+
+### Итого
+- Количество промптов: 2
+- Проблемы: Docker Desktop локально выключен, поэтому runtime compose проверялся через `docker compose config`.
+- Что исправлено вручную: README описывает dashboard, Arrow path, streaming path и kubectl команды.

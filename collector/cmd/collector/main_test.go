@@ -29,6 +29,40 @@ func TestNormalizeShardIndexDerivesFromCollectorID(t *testing.T) {
 	}
 }
 
+func TestAssignedToShardSupportsTopicStrategy(t *testing.T) {
+	post := social.Post{PostID: "post-1", Topic: "ai", AuthorID: "author-001"}
+	topicShard := normalizeShardIndex(CollectorConfig{ID: "topic-owner", ShardIndex: -1, ShardTotal: 3})
+
+	got := assignedToShard(post, CollectorConfig{
+		ID:            "topic-owner",
+		ShardIndex:    topicShard,
+		ShardTotal:    3,
+		ShardStrategy: "topic",
+	})
+	want := belongsToShard("ai", topicShard, 3)
+
+	if got != want {
+		t.Fatalf("topic strategy mismatch: got %v want %v", got, want)
+	}
+}
+
+func TestAssignedToShardSupportsAuthorRangeStrategy(t *testing.T) {
+	post := social.Post{PostID: "post-1", Topic: "ai", AuthorID: "author-042"}
+	authorShard := normalizeShardIndex(CollectorConfig{ID: "author-owner", ShardIndex: -1, ShardTotal: 4})
+
+	got := assignedToShard(post, CollectorConfig{
+		ID:            "author-owner",
+		ShardIndex:    authorShard,
+		ShardTotal:    4,
+		ShardStrategy: "author-range",
+	})
+	want := belongsToShard("author-042", authorShard, 4)
+
+	if got != want {
+		t.Fatalf("author-range strategy mismatch: got %v want %v", got, want)
+	}
+}
+
 func TestCollectRejectsInvalidShardConfig(t *testing.T) {
 	_, err := collect(
 		context.Background(),

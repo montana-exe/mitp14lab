@@ -4,7 +4,6 @@ resources:
   - namespace.yaml
   - nats.yaml
   - etcd.yaml
-  - collector-deployment.yaml
-  - analyzer-deployment.yaml
-  - dashboard-deployment.yaml
+  - deployment.yaml
+  - service.yaml
   - hpa.yaml

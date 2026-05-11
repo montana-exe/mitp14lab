@@ -44,7 +44,7 @@ Kubernetes manifests deploy collector/analyzer/dashboard plus etcd, NATS and HPA
 
 | Задание | Реализация |
 | --- | --- |
-| Distributed collectors | Go collector поддерживает `collector-id`, `shard-index`, `shard-total`, детерминированный shard filter и регистрацию в etcd через v3 HTTP API. |
+| Distributed collectors | Go collector поддерживает `collector-id`, `shard-index`, `shard-total`, `shard-strategy`, детерминированный shard assignment и регистрацию в etcd через v3 HTTP API. |
 | Streaming broker | NATS JetStream включён в Docker Compose; collector публикует `social.windows`, analyzer подписывается и пишет stream JSONL. |
 | Fast analytics | Polars очищает окна, DuckDB строит SQL-отчёт, результат сохраняется в Parquet/CSV/HTML. |
 | Apache Arrow | Go endpoint `/arrow` отдаёт Arrow IPC stream; Python/Streamlit читает его через `pyarrow`. |
@@ -111,7 +111,7 @@ kubectl -n lab14-social get pods
 kubectl -n lab14-social get hpa
 ```
 
-HPA масштабирует `collector` от 2 до 6 реплик по CPU. Для демонстрации shard ownership в Kubernetes используется `-shard-index -1`: collector сам выводит индекс шарда из имени pod.
+HPA масштабирует `collector` от 2 до 6 реплик по CPU. Для демонстрации shard ownership в Kubernetes используется `-shard-index -1`: collector сам выводит индекс шарда из имени pod. Поддерживаются стратегии `hash`, `topic` и `author-range`, поэтому нагрузку можно делить по источникам, темам или диапазонам авторов.
 
 ## Apache Arrow
 
@@ -160,7 +160,7 @@ pipeline/           Python analyzer, NATS consumer, Arrow client, benchmark, Rus
 rust-validator/     Rust JSONL validation library and CLI
 dashboard/          Streamlit dashboard
 analyzer/           Dockerfile for stream analyzer service
-k8s/                Kubernetes deployments, services and HPA
+k8s/                Kubernetes deployment.yaml, service.yaml, hpa.yaml and infra manifests
 docs/               Architecture notes for Arrow, streaming, coordination and benchmark
 tests/              Python unit tests
 docker-compose.yml  Full distributed local stack

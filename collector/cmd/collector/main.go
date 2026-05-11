@@ -24,19 +24,20 @@ import (
 
 func main() {
 	var (
-		outDir       = flag.String("out", "data", "output directory")
-		count        = flag.Int("count", 240, "number of synthetic posts to collect")
-		batchSize    = flag.Int("batch", 50, "JSONL batch size")
-		windowSize   = flag.Duration("window", time.Minute, "aggregation window")
-		serve        = flag.Bool("serve", false, "start Arrow HTTP server after collection")
-		addr         = flag.String("addr", ":8080", "HTTP server address")
-		topicsFlag   = flag.String("topics", "ai,fintech,travel,gaming", "comma-separated topics")
-		collectorID  = flag.String("collector-id", envOrDefault("COLLECTOR_ID", "collector-local"), "collector identity for distributed coordination")
-		shardIndex   = flag.Int("shard-index", envIntOrDefault("SHARD_INDEX", 0), "zero-based shard index owned by this collector; -1 derives it from collector-id")
-		shardTotal   = flag.Int("shard-total", envIntOrDefault("SHARD_TOTAL", 1), "total shard count across collectors")
-		etcdEndpoint = flag.String("etcd-endpoint", os.Getenv("ETCD_ENDPOINT"), "etcd HTTP endpoint, for example http://etcd:2379")
-		natsURL      = flag.String("nats-url", os.Getenv("NATS_URL"), "NATS broker URL, for example nats://nats:4222")
-		subject      = flag.String("stream-subject", envOrDefault("STREAM_SUBJECT", "social.windows"), "NATS subject for window metrics")
+		outDir        = flag.String("out", "data", "output directory")
+		count         = flag.Int("count", 240, "number of synthetic posts to collect")
+		batchSize     = flag.Int("batch", 50, "JSONL batch size")
+		windowSize    = flag.Duration("window", time.Minute, "aggregation window")
+		serve         = flag.Bool("serve", false, "start Arrow HTTP server after collection")
+		addr          = flag.String("addr", ":8080", "HTTP server address")
+		topicsFlag    = flag.String("topics", "ai,fintech,travel,gaming", "comma-separated topics")
+		collectorID   = flag.String("collector-id", envOrDefault("COLLECTOR_ID", "collector-local"), "collector identity for distributed coordination")
+		shardIndex    = flag.Int("shard-index", envIntOrDefault("SHARD_INDEX", 0), "zero-based shard index owned by this collector; -1 derives it from collector-id")
+		shardTotal    = flag.Int("shard-total", envIntOrDefault("SHARD_TOTAL", 1), "total shard count across collectors")
+		shardStrategy = flag.String("shard-strategy", envOrDefault("SHARD_STRATEGY", "hash"), "shard strategy: hash, topic, or author-range")
+		etcdEndpoint  = flag.String("etcd-endpoint", os.Getenv("ETCD_ENDPOINT"), "etcd HTTP endpoint, for example http://etcd:2379")
+		natsURL       = flag.String("nats-url", os.Getenv("NATS_URL"), "NATS broker URL, for example nats://nats:4222")
+		subject       = flag.String("stream-subject", envOrDefault("STREAM_SUBJECT", "social.windows"), "NATS subject for window metrics")
 	)
 	flag.Parse()
 
@@ -48,6 +49,7 @@ func main() {
 		ID:            *collectorID,
 		ShardIndex:    *shardIndex,
 		ShardTotal:    *shardTotal,
+		ShardStrategy: strings.ToLower(strings.TrimSpace(*shardStrategy)),
 		EtcdEndpoint:  *etcdEndpoint,
 		NATSURL:       *natsURL,
 		StreamSubject: *subject,
@@ -73,6 +75,7 @@ type CollectorConfig struct {
 	ID            string `json:"id"`
 	ShardIndex    int    `json:"shard_index"`
 	ShardTotal    int    `json:"shard_total"`
+	ShardStrategy string `json:"shard_strategy"`
 	EtcdEndpoint  string `json:"etcd_endpoint"`
 	NATSURL       string `json:"nats_url"`
 	StreamSubject string `json:"stream_subject"`
@@ -85,6 +88,9 @@ func collect(ctx context.Context, outDir string, count, batchSize int, window ti
 	cfg.ShardIndex = normalizeShardIndex(cfg)
 	if cfg.ShardIndex < 0 || cfg.ShardIndex >= cfg.ShardTotal {
 		return nil, fmt.Errorf("shard-index must be in [0,%d), got %d", cfg.ShardTotal, cfg.ShardIndex)
+	}
+	if cfg.ShardStrategy == "" {
+		cfg.ShardStrategy = "hash"
 	}
 	simulator := social.NewSimulator(42, topics)
 	aggregator := social.NewAggregator(window)
@@ -101,7 +107,7 @@ func collect(ctx context.Context, outDir string, count, batchSize int, window ti
 		default:
 		}
 		post := simulator.Next(i, start.Add(time.Duration(i)*5*time.Second))
-		if !belongsToShard(post.PostID, cfg.ShardIndex, cfg.ShardTotal) {
+		if !assignedToShard(post, cfg) {
 			continue
 		}
 		aggregator.Add(post)
@@ -134,6 +140,19 @@ func normalizeShardIndex(cfg CollectorConfig) int {
 	hasher := fnv.New32a()
 	_, _ = hasher.Write([]byte(cfg.ID))
 	return int(hasher.Sum32() % uint32(cfg.ShardTotal))
+}
+
+func assignedToShard(post social.Post, cfg CollectorConfig) bool {
+	switch cfg.ShardStrategy {
+	case "hash":
+		return belongsToShard(post.PostID, cfg.ShardIndex, cfg.ShardTotal)
+	case "topic":
+		return belongsToShard(strings.ToLower(post.Topic), cfg.ShardIndex, cfg.ShardTotal)
+	case "author-range":
+		return belongsToShard(post.AuthorID, cfg.ShardIndex, cfg.ShardTotal)
+	default:
+		return belongsToShard(post.PostID, cfg.ShardIndex, cfg.ShardTotal)
+	}
 }
 
 func belongsToShard(key string, shardIndex, shardTotal int) bool {

@@ -10,10 +10,12 @@ Collectors регистрируются в etcd по ключу:
 
 ## Sharding
 
-Для каждого synthetic post вычисляется FNV-1a hash от `post_id`.
+Collector поддерживает три стратегии:
 
 ```text
-hash(post_id) % shard_total == shard_index
+hash:         hash(post_id) % shard_total == shard_index
+topic:        hash(topic) % shard_total == shard_index
+author-range: hash(author_id) % shard_total == shard_index
 ```
 
 Если `shard-index = -1`, collector выводит индекс из `collector-id`. Это удобно для Kubernetes, где имя pod стабильно доступно через Downward API.

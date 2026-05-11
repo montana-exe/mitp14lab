@@ -47,6 +47,8 @@ services:
       - "0"
       - -shard-total
       - "1"
+      - -shard-strategy
+      - topic
       - -etcd-endpoint
       - http://etcd:2379
       - -nats-url
