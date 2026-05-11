@@ -17,6 +17,18 @@ func TestBelongsToShardIsDeterministic(t *testing.T) {
 	}
 }
 
+func TestNormalizeShardIndexDerivesFromCollectorID(t *testing.T) {
+	first := normalizeShardIndex(CollectorConfig{ID: "collector-a", ShardIndex: -1, ShardTotal: 4})
+	second := normalizeShardIndex(CollectorConfig{ID: "collector-a", ShardIndex: -1, ShardTotal: 4})
+
+	if first != second {
+		t.Fatal("expected derived shard index to be deterministic")
+	}
+	if first < 0 || first >= 4 {
+		t.Fatalf("derived shard index out of range: %d", first)
+	}
+}
+
 func TestCollectRejectsInvalidShardConfig(t *testing.T) {
 	_, err := collect(
 		context.Background(),

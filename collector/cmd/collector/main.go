@@ -32,7 +32,7 @@ func main() {
 		addr         = flag.String("addr", ":8080", "HTTP server address")
 		topicsFlag   = flag.String("topics", "ai,fintech,travel,gaming", "comma-separated topics")
 		collectorID  = flag.String("collector-id", envOrDefault("COLLECTOR_ID", "collector-local"), "collector identity for distributed coordination")
-		shardIndex   = flag.Int("shard-index", envIntOrDefault("SHARD_INDEX", 0), "zero-based shard index owned by this collector")
+		shardIndex   = flag.Int("shard-index", envIntOrDefault("SHARD_INDEX", 0), "zero-based shard index owned by this collector; -1 derives it from collector-id")
 		shardTotal   = flag.Int("shard-total", envIntOrDefault("SHARD_TOTAL", 1), "total shard count across collectors")
 		etcdEndpoint = flag.String("etcd-endpoint", os.Getenv("ETCD_ENDPOINT"), "etcd HTTP endpoint, for example http://etcd:2379")
 		natsURL      = flag.String("nats-url", os.Getenv("NATS_URL"), "NATS broker URL, for example nats://nats:4222")
@@ -82,6 +82,7 @@ func collect(ctx context.Context, outDir string, count, batchSize int, window ti
 	if cfg.ShardTotal < 1 {
 		return nil, fmt.Errorf("shard-total must be positive, got %d", cfg.ShardTotal)
 	}
+	cfg.ShardIndex = normalizeShardIndex(cfg)
 	if cfg.ShardIndex < 0 || cfg.ShardIndex >= cfg.ShardTotal {
 		return nil, fmt.Errorf("shard-index must be in [0,%d), got %d", cfg.ShardTotal, cfg.ShardIndex)
 	}
@@ -121,6 +122,18 @@ func collect(ctx context.Context, outDir string, count, batchSize int, window ti
 		return nil, err
 	}
 	return metrics, nil
+}
+
+func normalizeShardIndex(cfg CollectorConfig) int {
+	if cfg.ShardIndex >= 0 {
+		return cfg.ShardIndex
+	}
+	if cfg.ShardTotal <= 1 {
+		return 0
+	}
+	hasher := fnv.New32a()
+	_, _ = hasher.Write([]byte(cfg.ID))
+	return int(hasher.Sum32() % uint32(cfg.ShardTotal))
 }
 
 func belongsToShard(key string, shardIndex, shardTotal int) bool {
