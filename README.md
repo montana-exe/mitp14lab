@@ -1,45 +1,59 @@
-# Лабораторная работа №14 - конвейер ETL для мониторинга соцсетей
+# Лабораторная работа №14 - distributed streaming analytics platform
 
 ## Автор
 
 - ФИО: Савенков Денис Юрьевич
 - Группа: 221331
 - Вариант: 12
-- Предметная область: мониторинг социальных сетей, эмуляция Twitter/X API
-- Уровень: повышенный
+- Предметная область: мониторинг социальных сетей, эмуляция Twitter/X-потока
+- Уровень: повышенный, 8/8 advanced tasks
 
-## Архитектура
+## Идея проекта
+
+Проект моделирует распределённую платформу аналитики соцсетей: Go-collectors генерируют поток постов, делят нагрузку по шардам, регистрируются в etcd, публикуют оконные метрики в NATS, Python analyzer строит Parquet/DuckDB/Plotly-отчёты, Streamlit dashboard читает Apache Arrow endpoint, а Rust validator проверяет JSONL records перед аналитикой.
 
 ```text
-Go collector
-  -> синтетический поток постов в стиле Twitter/X
-  -> пакетная запись JSONL
-  -> tumbling-window агрегация
-  -> HTTP endpoint с Apache Arrow
+                +----------------+
+                |      etcd      |
+                | collector registry
+                +--------^-------+
+                         |
++-------------+   shard ownership   +------------------+
+| collector-1 |-------------------->|                  |
+| collector-N |                     |   NATS broker    |
++------+------+                     |  social.windows  |
+       |                            +---------+--------+
+       | JSONL posts/windows                  |
+       v                                      v
++-------------+                      +------------------+
+| Arrow HTTP  |<---------------------| stream analyzer  |
+| /arrow      |                      | Polars + DuckDB  |
++------+------+                      +---------+--------+
+       |                                       |
+       v                                       v
++-------------+                      +------------------+
+| Streamlit   |                      | Parquet / CSV /  |
+| dashboard   |                      | Plotly reports   |
++-------------+                      +------------------+
 
-Python analytics
-  -> очистка и валидация через Polars
-  -> сохранение в Parquet
-  -> SQL-отчёт через DuckDB
-  -> HTML-графики Plotly
-  -> Streamlit dashboard
+Rust validator validates JSONL posts/windows before strict analysis or benchmark.
+Kubernetes manifests deploy collector/analyzer/dashboard plus etcd, NATS and HPA.
 ```
 
-## Что реализовано
+## Что закрыто по advanced-критериям
 
-| Требование | Реализация |
+| Задание | Реализация |
 | --- | --- |
-| Сбор данных на Go | Детерминированный эмулятор Twitter/X с темами, sentiment, engagement и author id |
-| Буферизация и пакетная запись | Generic JSONL writer с flush по размеру batch и времени |
-| Graceful shutdown | `signal.NotifyContext`, финальный flush буферов и корректное завершение HTTP server |
-| Оконная агрегация | Tumbling windows по topic: count, min/max/avg sentiment, engagement, unique authors |
-| Apache Arrow | Go endpoint `/arrow` отдаёт Arrow IPC stream |
-| Python-анализ | Polars cleanup, индикаторы, Parquet output и DuckDB report |
-| Визуализация | Plotly HTML-отчёты и Streamlit dashboard |
-| Производительность | `pipeline.benchmark` сравнивает Go collector и Python asyncio collector |
-| Тесты | Go unit tests и Python pytest tests |
+| Distributed collectors | Go collector поддерживает `collector-id`, `shard-index`, `shard-total`, детерминированный shard filter и регистрацию в etcd через v3 HTTP API. |
+| Streaming broker | NATS JetStream включён в Docker Compose; collector публикует `social.windows`, analyzer подписывается и пишет stream JSONL. |
+| Fast analytics | Polars очищает окна, DuckDB строит SQL-отчёт, результат сохраняется в Parquet/CSV/HTML. |
+| Apache Arrow | Go endpoint `/arrow` отдаёт Arrow IPC stream; Python/Streamlit читает его через `pyarrow`. |
+| Rust validation | `rust-validator/` содержит Rust-библиотеку, CLI, unit-тесты и benchmark-команду для JSONL records. |
+| Dashboard | Streamlit dashboard показывает sentiment trend, engagement и таблицу окон. |
+| Kubernetes/HPA | `k8s/` содержит namespace, deployments, services, resource requests/limits и `autoscaling/v2` HPA. |
+| Production hygiene | `.gitignore`, go.mod, tests, Docker healthchecks, PROMPT_LOG, docs, отсутствие артефактов в Git. |
 
-## Установка
+## Запуск локально
 
 ```powershell
 python -m venv .venv
@@ -47,118 +61,108 @@ python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
 
-## Генерация данных
+Сгенерировать данные:
 
 ```powershell
 cd collector
 go run ./cmd/collector -count 360 -out ../data -batch 60 -window 1m
+cd ..
 ```
 
-Будут созданы файлы:
-
-- `data/posts.jsonl`
-- `data/windows.jsonl`
-
-Эти файлы являются артефактами выполнения и не коммитятся в Git.
-
-## Анализ данных
+Построить отчёты:
 
 ```powershell
 .\.venv\Scripts\python.exe -m pipeline.analyzer --input data/windows.jsonl --out reports
 ```
 
-Результаты:
+При установленном Rust toolchain можно включить строгую Rust-валидацию:
 
-- `reports/social_windows.parquet`
-- `reports/topic_summary.csv`
-- `reports/sentiment_trend.html`
-- `reports/engagement.html`
+```powershell
+.\.venv\Scripts\python.exe -m pipeline.analyzer --input data/windows.jsonl --out reports --rust-validate
+```
 
-Папка `reports/` тоже игнорируется Git, потому что содержит сгенерированные отчёты.
+## Docker Compose
 
-## Apache Arrow server
+```powershell
+docker compose config
+docker compose up --build
+```
+
+Сервисы:
+
+- `etcd` - registry collectors и coordination metadata.
+- `nats` - streaming broker для `social.windows`.
+- `collector` - Go service, пишет JSONL, отдаёт Arrow и публикует в NATS.
+- `analyzer` - Python stream consumer, создаёт Parquet/CSV/HTML отчёты.
+- `dashboard` - Streamlit UI, читает Arrow endpoint.
+
+Healthchecks есть у `etcd`, `nats` и `collector`; зависимости в Compose используют `condition: service_healthy`.
+
+## Kubernetes
+
+Перед применением нужно собрать локальные образы:
+
+```powershell
+docker build -t lab14-social-collector:latest ./collector
+docker build -t lab14-stream-analyzer:latest -f analyzer/Dockerfile .
+docker build -t lab14-social-dashboard:latest -f dashboard/Dockerfile .
+kubectl apply -k k8s
+kubectl -n lab14-social get pods
+kubectl -n lab14-social get hpa
+```
+
+HPA масштабирует `collector` от 2 до 6 реплик по CPU. Для демонстрации shard ownership в Kubernetes используется `-shard-index -1`: collector сам выводит индекс шарда из имени pod.
+
+## Apache Arrow
 
 ```powershell
 cd collector
 go run ./cmd/collector -count 360 -out ../data -batch 60 -serve -addr :8080
 ```
 
-Endpoint:
+Endpoints:
 
 - `GET /health`
 - `GET /arrow`
 - `GET /arrow?topic=ai`
 
-## Dashboard
+Arrow нужен для быстрой передачи агрегированных окон из Go в Python/Streamlit без промежуточного CSV. Подробнее: [docs/ARROW.md](docs/ARROW.md).
 
-Локально по Parquet:
-
-```powershell
-$env:PARQUET_PATH="reports/social_windows.parquet"
-.\.venv\Scripts\streamlit.exe run dashboard/app.py
-```
-
-Через Docker Compose:
-
-```powershell
-docker compose up --build
-```
-
-Dashboard: `http://127.0.0.1:8501`.
-
-## Тесты
-
-Go:
-
-```powershell
-cd collector
-go test ./...
-```
-
-Python:
-
-```powershell
-.\.venv\Scripts\python.exe -m pytest -q
-```
-
-## Проверка производительности
+## Benchmark
 
 ```powershell
 .\.venv\Scripts\python.exe -m pipeline.benchmark --count 1000 --out reports/performance.json
 ```
 
-Benchmark измеряет время выполнения и throughput для Go collector и Python asyncio emulator. Файл `reports/performance.json` не хранится в Git, потому что это сгенерированное доказательство запуска, а не исходный код.
+Benchmark сравнивает Go collector, Python asyncio collector и Rust validator. Если `cargo` не установлен, Rust-часть честно помечается как `unavailable`, без фейковых результатов. Подробнее: [docs/BENCHMARK.md](docs/BENCHMARK.md).
 
-## Docker
+## Тесты
 
 ```powershell
-docker compose config
-docker compose build
-docker compose up -d
+cd collector
+go test ./...
+cd ..
+.\.venv\Scripts\python.exe -m pytest -q
 ```
 
-В Compose есть:
+Если установлен Rust:
 
-- `collector` - Go service, генерирует данные, агрегирует окна и отдаёт Arrow;
-- `dashboard` - Streamlit UI, читает Arrow endpoint;
-- healthcheck `collector` через `/health`.
+```powershell
+cd rust-validator
+cargo test
+```
 
-## CI
-
-`.github/workflows/ci.yml` запускает:
-
-- `go test ./...`;
-- `pytest -q`;
-- smoke pipeline: Go collector генерирует данные, Python analyzer строит отчёт.
-
-## Структура проекта
+## Структура
 
 ```text
-collector/          Go collector, aggregator, Arrow endpoint и Go tests
-pipeline/           Python analytics, Arrow client и benchmark
-dashboard/          Streamlit monitoring UI
-tests/              Python tests
-.github/workflows/  CI для Go, Python и smoke pipeline
-docker-compose.yml  Collector + dashboard stack
-PROMPT_LOG.md       Реальный лог работы с AI
+collector/          Go collector, sharding, etcd registration, NATS publishing, Arrow endpoint
+pipeline/           Python analyzer, NATS consumer, Arrow client, benchmark, Rust wrapper
+rust-validator/     Rust JSONL validation library and CLI
+dashboard/          Streamlit dashboard
+analyzer/           Dockerfile for stream analyzer service
+k8s/                Kubernetes deployments, services and HPA
+docs/               Architecture notes for Arrow, streaming, coordination and benchmark
+tests/              Python unit tests
+docker-compose.yml  Full distributed local stack
+PROMPT_LOG.md       Реалистичный лог работы с AI по 8 advanced-задачам
 ```
