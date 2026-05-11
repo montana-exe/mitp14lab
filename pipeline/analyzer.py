@@ -8,6 +8,8 @@ import duckdb
 import plotly.express as px
 import polars as pl
 
+from pipeline.rust_validator import validate_jsonl
+
 WINDOW_SCHEMA = {
     "window_start": pl.String,
     "window_end": pl.String,
@@ -149,7 +151,9 @@ def write_plots(df: pl.DataFrame, report_dir: Path) -> None:
     engagement.write_html(report_dir / "engagement.html")
 
 
-def run(input_path: Path, output_dir: Path) -> dict[str, Any]:
+def run(input_path: Path, output_dir: Path, validate_with_rust: bool = False) -> dict[str, Any]:
+    if validate_with_rust:
+        validate_jsonl(input_path)
     output_dir.mkdir(parents=True, exist_ok=True)
     cleaned = add_indicators(clean_windows(load_windows(input_path)))
     parquet_path = output_dir / "social_windows.parquet"
@@ -170,8 +174,9 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Analyze lab14 social media windows")
     parser.add_argument("--input", type=Path, default=Path("data/windows.jsonl"))
     parser.add_argument("--out", type=Path, default=Path("reports"))
+    parser.add_argument("--rust-validate", action="store_true", help="validate input JSONL with Rust before analysis")
     args = parser.parse_args()
-    result = run(args.input, args.out)
+    result = run(args.input, args.out, validate_with_rust=args.rust_validate)
     print(result)
 
 
