@@ -1,17 +1,84 @@
 services:
+  etcd:
+    image: quay.io/coreos/etcd:v3.5.15
+    command:
+      - etcd
+      - --name=lab14-etcd
+      - --data-dir=/etcd-data
+      - --listen-client-urls=http://0.0.0.0:2379
+      - --advertise-client-urls=http://etcd:2379
+    ports:
+      - "2379:2379"
+    healthcheck:
+      test: ["CMD", "etcdctl", "endpoint", "health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  nats:
+    image: nats:2.10-alpine
+    command: ["-js", "-m", "8222"]
+    ports:
+      - "4222:4222"
+      - "8222:8222"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8222/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   collector:
     build: ./collector
     image: lab14-social-collector
-    command: ["/app/collector", "-out", "/app/data", "-count", "360", "-batch", "60", "-serve", "-addr", ":8080"]
+    command:
+      - /app/collector
+      - -out
+      - /app/data
+      - -count
+      - "360"
+      - -batch
+      - "60"
+      - -serve
+      - -addr
+      - :8080
+      - -collector-id
+      - collector-1
+      - -shard-index
+      - "0"
+      - -shard-total
+      - "1"
+      - -etcd-endpoint
+      - http://etcd:2379
+      - -nats-url
+      - nats://nats:4222
     ports:
       - "8080:8080"
     volumes:
       - social-data:/app/data
+    depends_on:
+      etcd:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:8080/health"]
       interval: 10s
       timeout: 5s
       retries: 5
+
+  analyzer:
+    build:
+      context: .
+      dockerfile: analyzer/Dockerfile
+    image: lab14-stream-analyzer
+    volumes:
+      - social-data:/app/data
+      - social-reports:/app/reports
+    depends_on:
+      nats:
+        condition: service_healthy
+      collector:
+        condition: service_healthy
 
   dashboard:
     build:
@@ -25,6 +92,9 @@ services:
     depends_on:
       collector:
         condition: service_healthy
+      analyzer:
+        condition: service_started
 
 volumes:
   social-data:
+  social-reports:
