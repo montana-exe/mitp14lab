@@ -1,0 +1,31 @@
+name: Lab14 CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+          cache-dependency-path: collector/go.sum
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Go tests
+        run: go test ./...
+        working-directory: collector
+      - name: Python dependencies
+        run: pip install -r requirements.txt
+      - name: Python tests
+        run: pytest -q
+      - name: Smoke pipeline
+        run: go run ./cmd/collector -count 120 -out ../data -batch 40
+        working-directory: collector
+      - name: Analyze smoke data
+        run: python -m pipeline.analyzer --input data/windows.jsonl --out reports
