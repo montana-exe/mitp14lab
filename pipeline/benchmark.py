@@ -51,13 +51,49 @@ def benchmark_go(count: int, workdir: Path) -> dict[str, float]:
     }
 
 
+def benchmark_rust_validator(workdir: Path, jsonl_path: Path) -> dict[str, float | str]:
+    cargo = shutil.which("cargo")
+    if cargo is None:
+        return {"status": "unavailable", "reason": "cargo is not installed"}
+    started = time.perf_counter()
+    subprocess.run(
+        [
+            cargo,
+            "run",
+            "--quiet",
+            "--manifest-path",
+            str(workdir / "rust-validator" / "Cargo.toml"),
+            "--",
+            "bench",
+            str(jsonl_path),
+            "3",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    elapsed = time.perf_counter() - started
+    rows = sum(1 for _ in jsonl_path.open(encoding="utf-8"))
+    return {
+        "status": "ok",
+        "records": float(rows * 3),
+        "seconds": round(elapsed, 4),
+        "records_per_second": round((rows * 3) / elapsed, 2),
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Compare Go and Python social collectors")
     parser.add_argument("--count", type=int, default=1000)
     parser.add_argument("--out", type=Path, default=Path("reports/performance.json"))
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[1]
-    result = {"go": benchmark_go(args.count, root), "python": benchmark_python(args.count)}
+    go_result = benchmark_go(args.count, root)
+    result = {
+        "go": go_result,
+        "python": benchmark_python(args.count),
+        "rust_validator": benchmark_rust_validator(root, root / "data" / "bench-go" / "posts.jsonl"),
+    }
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(result, indent=2), encoding="utf-8")
     print(json.dumps(result, indent=2))
