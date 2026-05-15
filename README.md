@@ -6,7 +6,7 @@
 - Группа: 221331
 - Вариант: 12
 - Предметная область: мониторинг социальных сетей, эмуляция Twitter/X-потока
-- Уровень: повышенный, 8/8 advanced tasks
+- Уровень: повышенная сложность, выполнены 8 заданий
 
 ## Идея проекта
 
@@ -42,16 +42,16 @@ Kubernetes manifests deploy collector/analyzer/dashboard plus etcd, NATS and HPA
 
 ## Что закрыто по advanced-критериям
 
-| Задание | Реализация |
-| --- | --- |
+| Задание                | Реализация                                                                                                                                                           |
+| ---------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Distributed collectors | Go collector поддерживает `collector-id`, `shard-index`, `shard-total`, `shard-strategy`, детерминированный shard assignment и регистрацию в etcd через v3 HTTP API. |
-| Streaming broker | NATS JetStream включён в Docker Compose; collector публикует `social.windows`, analyzer подписывается и пишет stream JSONL. |
-| Fast analytics | Polars очищает окна, DuckDB строит SQL-отчёт, результат сохраняется в Parquet/CSV/HTML. |
-| Apache Arrow | Go endpoint `/arrow` отдаёт Arrow IPC stream; Python/Streamlit читает его через `pyarrow`. |
-| Rust validation | `rust-validator/` содержит Rust-библиотеку, CLI, unit-тесты и benchmark-команду для JSONL records. |
-| Dashboard | Streamlit dashboard показывает sentiment trend, engagement и таблицу окон. |
-| Kubernetes/HPA | `k8s/` содержит namespace, deployments, services, resource requests/limits и `autoscaling/v2` HPA. |
-| Production hygiene | `.gitignore`, go.mod, tests, Docker healthchecks, PROMPT_LOG, docs, отсутствие артефактов в Git. |
+| Streaming broker       | NATS JetStream включён в Docker Compose; collector публикует `social.windows`, analyzer подписывается и пишет stream JSONL.                                          |
+| Fast analytics         | Polars очищает окна, DuckDB строит SQL-отчёт, результат сохраняется в Parquet/CSV/HTML.                                                                              |
+| Apache Arrow           | Go endpoint `/arrow` отдаёт Arrow IPC stream; Python/Streamlit читает его через `pyarrow`.                                                                           |
+| Rust validation        | `rust-validator/` содержит Rust-библиотеку, CLI, unit-тесты и benchmark-команду для JSONL records.                                                                   |
+| Dashboard              | Streamlit dashboard показывает sentiment trend, engagement и таблицу окон.                                                                                           |
+| Kubernetes/HPA         | `k8s/` содержит namespace, deployments, services, resource requests/limits и `autoscaling/v2` HPA.                                                                   |
+| Production hygiene     | `.gitignore`, go.mod, tests, Docker healthchecks, PROMPT_LOG, docs, отсутствие артефактов в Git.                                                                     |
 
 ## Запуск локально
 
